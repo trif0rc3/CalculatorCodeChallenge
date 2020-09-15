@@ -1,0 +1,263 @@
+<!doctype html>
+<html>
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <title>Multi-User Calculator WebApp</title>
+	<link href="styles.css" rel="stylesheet" type="text/css">
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+	<script>
+        $(document).ready(function(){
+            //using Server Sent Events to update calculator shared feed:
+            const sharedFeedArray = [];
+            
+            const source = new EventSource("get_feed_sse.php");
+    	    
+        	source.onmessage=function(event)
+            {
+                $("#sharedFeed").html(""); //clear feed
+                //update feed:
+                var data = JSON.parse(event.data);
+                data.feed.forEach(writeFeed);
+                
+                if (sharedFeedArray.length < data.feed.length) {
+    			    data.feed.forEach(ingestServerFeed);
+    			}
+            };
+            
+            function writeFeed(item, index) {
+                var listElement = document.createElement("li");
+    			listElement.innerHTML = item;
+    			document.getElementById("sharedFeed").appendChild(listElement);
+            }
+            
+            function ingestServerFeed(item, index) {
+                sharedFeedArray[index] = item;
+            }
+            
+			const calculator = {
+			  displayValue: '0',
+			  firstOperand: null,
+			  waitingForSecondOperand: false,
+			  operator: null,
+			};
+
+			function inputDigit(digit) {
+			  const { displayValue, waitingForSecondOperand } = calculator;
+
+			  if (waitingForSecondOperand === true) {
+				calculator.displayValue = digit;
+				calculator.waitingForSecondOperand = false;
+			  } else {
+				calculator.displayValue = displayValue === '0' ? digit : displayValue + digit;
+			  }
+			}
+
+			function inputDecimal(dot) {
+			  if (calculator.waitingForSecondOperand === true) {
+				calculator.displayValue = "0."
+				calculator.waitingForSecondOperand = false;
+				return
+			  }
+
+			  if (!calculator.displayValue.includes(dot)) {
+				calculator.displayValue += dot;
+			  }
+			}
+
+			function handleOperator(nextOperator) {
+			  const { firstOperand, displayValue, operator } = calculator
+			  const inputValue = parseFloat(displayValue);
+			  
+			  if (operator && calculator.waitingForSecondOperand)  {
+				calculator.operator = nextOperator;
+				return;
+			  }
+
+
+			  if (firstOperand == null && !isNaN(inputValue)) {
+				calculator.firstOperand = inputValue;
+			  } else if (operator) {
+				const result = calculate(firstOperand, inputValue, operator);
+
+				calculator.displayValue = `${parseFloat(result.toFixed(7))}`;
+				calculator.firstOperand = result;
+			  }
+
+			  calculator.waitingForSecondOperand = true;
+			  calculator.operator = nextOperator;
+			}
+
+			function calculate(firstOperand, secondOperand, operator) {
+			  if (operator === '+') {
+				return firstOperand + secondOperand;
+			  } else if (operator === '-') {
+				return firstOperand - secondOperand;
+			  } else if (operator === '*') {
+				return firstOperand * secondOperand;
+			  } else if (operator === '/') {
+				return firstOperand / secondOperand;
+			  }
+
+			  return secondOperand;
+			}
+
+			function resetCalculator() {
+			  calculator.displayValue = '0';
+			  calculator.firstOperand = null;
+			  calculator.waitingForSecondOperand = false;
+			  calculator.operator = null;
+			}
+
+			function updateDisplay() {
+			  const display = document.querySelector('.calculator-screen');
+			  display.value = calculator.displayValue;
+			}
+
+			function writeOutputFeed(outValue) {
+				var feed = document.querySelector('.calculator-feed');
+				feed.value += outValue;
+			}
+
+			//var sharedFeedArray = new Array(10).fill("");
+			function appendToSharedFeed() {
+				var feed = document.querySelector('.calculator-feed');
+				sharedFeedArray.unshift(feed.value);
+				feed.value = ""; //clear current feed after move to history
+				
+				if (sharedFeedArray.length > 10) 
+				{
+					sharedFeedArray.pop();
+				}
+			}
+
+			function clearFeed()
+			{
+				var feed = document.querySelector('.calculator-feed');
+				feed.value = "";
+			}
+
+			function updateScreenFeed() {
+				//clear list and refresh
+				$("#sharedFeed").html("");
+				
+				for (var i = 0; i < sharedFeedArray.length; i++) {
+					var listItem = document.createElement('li');
+					listItem.appendChild(document.createTextNode(sharedFeedArray[i]));
+					document.getElementById("sharedFeed").appendChild(listItem);
+				}
+			}
+			
+			function uploadFeed() {
+    			let data = {"feed": sharedFeedArray};
+    
+                var jsonString = JSON.stringify(data);
+                
+                var request = $.ajax({
+                	type: 'POST', 
+                	url: 'save_json.php',
+                	dataType: 'json',
+                	data: {"json": jsonString},
+                	success: function()
+                	{
+                		//alert('Success- written to file: \n' + jsonString);
+                	}
+                });
+			}
+
+			updateDisplay();
+
+			const keys = document.querySelector('.calculator-keys');
+			keys.addEventListener('click', event => {
+			  const { target } = event;
+			  const { value } = target;
+			  if (!target.matches('button')) {
+				return;
+			  }
+
+			  //handle calculator operations
+			  switch (value) {
+				case '+':
+				case '-':
+				case '*':
+				case '/':
+				case '=':
+				  handleOperator(value);
+				  break;
+				case '.':
+				  inputDecimal(value);
+				  break;
+				case 'all-clear':
+				  resetCalculator();
+				  break;
+				default:
+				  if (Number.isInteger(parseFloat(value))) {
+					inputDigit(value);
+				  }
+			  }
+			  
+			  //handle calculator feed
+			  switch (value) {
+				case '+':
+				case '-':
+				case '*':
+				case '/':
+					writeOutputFeed(" " + value + " ");
+					break;
+				case '=':
+					writeOutputFeed(" " + value + " " + calculator.displayValue);
+					appendToSharedFeed();
+					updateScreenFeed();
+					uploadFeed();
+					break;
+				case 'all-clear':
+					clearFeed();
+					break;
+				case '.':
+				default:
+					writeOutputFeed(value);
+			  }
+
+			  updateDisplay();
+			});
+		});
+	</script> 
+  </head>
+  <body>
+    <div class="calculator">
+	  <input type="text" class="calculator-feed" value="" disabled />
+	  <input type="text" class="calculator-screen" value="" enabled />
+	  
+	  <div class="calculator-keys">
+		
+		<button type="button" class="operator" value="+">+</button>
+		<button type="button" class="operator" value="-">-</button>
+		<button type="button" class="operator" value="*">&times;</button>
+		<button type="button" class="operator" value="/">&divide;</button>
+
+		<button type="button" value="7">7</button>
+		<button type="button" value="8">8</button>
+		<button type="button" value="9">9</button>
+
+
+		<button type="button" value="4">4</button>
+		<button type="button" value="5">5</button>
+		<button type="button" value="6">6</button>
+
+
+		<button type="button" value="1">1</button>
+		<button type="button" value="2">2</button>
+		<button type="button" value="3">3</button>
+
+
+		<button type="button" value="0">0</button>
+		<button type="button" class="decimal" value=".">.</button>
+		<button type="button" class="all-clear" value="all-clear">AC</button>
+
+		<button type="button" class="equal-sign operator" value="=">=</button>
+		
+	  </div>
+	  <p>Multi-User Calculator Feed:</p>
+	  <ul id="sharedFeed"></ul>
+	</div>
+  </body>
+</html>
